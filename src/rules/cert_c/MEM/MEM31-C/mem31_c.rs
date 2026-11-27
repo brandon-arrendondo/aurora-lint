@@ -1984,7 +1984,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     ///
     /// A block that ends in `return x;` hands `x` to the caller, which
     /// counts here as releasing it: the set only ever withholds a goto leak
-    /// report, and a returned object is not leaked by the jump.
+    /// report, and a returned object is not leaked by the jump. Not when the
+    /// block writes `x` before returning it (`fail: x = NULL; return x;`):
+    /// what it returns is then not the block the jump carried.
     ///
     /// A release of a member is not a release of the object holding it: a
     /// label that frees only `p->f` leaves the jump's leak of `p` reported.
@@ -2005,6 +2007,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     let mut last = label
                         .named_child(label.named_child_count().saturating_sub(1))
                         .filter(|inner| inner.kind() != "statement_identifier");
+                    // Every statement the block runs, the label's own first.
+                    let mut block = vec![label];
                     if self.labeled_body_falls_through(&label, source) {
                         let mut next = next_statement_sibling(&label);
                         let mut previous = label;
@@ -2014,6 +2018,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             previous = sibling;
                             if sibling.kind() != "comment" {
                                 self.collect_frees_in_label(&sibling, source, &mut freed_vars);
+                                block.push(sibling);
                                 last = Some(sibling);
                                 if !self.statement_falls_through(&sibling, source) {
                                     break;
@@ -2024,13 +2029,22 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     }
                     // A block that ends by returning an object hands it to
                     // the caller: hostap's `not_compatible: ... return auth;`
-                    // does not leak the `auth` a jump to it carries.
+                    // does not leak the `auth` a jump to it carries. A block
+                    // that writes the name first returns something else
+                    // (`fail: r = NULL; return r;`), and the block the jump
+                    // carried is lost there.
                     if let Some(returned) = last
                         .filter(|stmt| stmt.kind() == "return_statement")
                         .and_then(|stmt| stmt.named_child(0))
                         .and_then(released_object)
                     {
-                        freed_vars.insert(ast_utils::get_node_text_owned(&returned, source));
+                        let name = ast_utils::get_node_text_owned(&returned, source);
+                        if !block
+                            .iter()
+                            .any(|stmt| writes_spelling(stmt, &name, source))
+                        {
+                            freed_vars.insert(name);
+                        }
                     }
                     if let Some(target) = last
                         .filter(|stmt| stmt.kind() == "goto_statement")
@@ -2172,20 +2186,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         }
                     }
                 }
-                // One definition that releases the argument itself is
-                // enough here: hostap's `crypto_ec_key_deinit` frees its
-                // key in the wolfSSL build and hands it to `EVP_PKEY_free`,
-                // which no scanned body defines, in the OpenSSL one. This set
-                // only ever withholds a goto leak report, and a MAY release
-                // is the polarity that licenses that.
-                let some_definition_frees =
-                    self.summary_at_any(&func_name, site).is_some_and(|s| {
-                        !s.frees_params.is_empty() || !s.frees_param_pointees.is_empty()
-                    });
-                if declared.is_some()
-                    || self.summary_frees_some_param(&func_name, site)
-                    || some_definition_frees
-                {
+                if declared.is_some() || self.summary_frees_some_param(&func_name, site) {
                     if let Some(arguments) = call.child_by_field_name("arguments") {
                         let mut param_idx = 0usize;
                         for arg in arguments.child_nodes() {
@@ -2215,13 +2216,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                                     through_address_of,
                                     site,
                                 )
-                                && !self.summary_at_any(&func_name, site).is_some_and(|s| {
-                                    Self::summary_releases_arg(
-                                        &s,
-                                        this_param_idx,
-                                        through_address_of,
-                                    )
-                                })
                             {
                                 continue;
                             }
@@ -6418,6 +6412,36 @@ fn assigns_to(expr: &Node, name: &str, source: &str) -> bool {
                     .child_by_field_name("left")
                     .is_some_and(|left| ast_utils::get_node_text(&left, source) == name)
         })
+}
+
+/// Whether anything under `node` may give the object spelled `name` a new
+/// value: an assignment to it with any operator, a `++`/`--` of it, its
+/// address taken (a callee handed `&name` may store through it), or a
+/// declaration of the same name, whose object a later use of the spelling
+/// would be.
+///
+/// This compares spellings, which ADR-0006 warns against for resolving what
+/// an occurrence refers to. Here the answer only withholds a credit, so a
+/// spelling that names some other object makes the check say yes and the
+/// report stand; it never makes a write look absent.
+fn writes_spelling(node: &Node, name: &str, source: &str) -> bool {
+    let spelled = |n: Option<Node>| {
+        n.map(peel_casts_and_parens)
+            .is_some_and(|n| ast_utils::get_node_text(&n, source) == name)
+    };
+    !query::find_descendants(*node, |n| match n.kind() {
+        "assignment_expression" => spelled(n.child_by_field_name("left")),
+        "update_expression" => spelled(n.child_by_field_name("argument")),
+        "pointer_expression" => {
+            n.child_by_field_name("operator").map(|o| o.kind()) == Some("&")
+                && spelled(n.child_by_field_name("argument"))
+        }
+        "identifier" => {
+            ast_utils::get_node_text(&n, source) == name && declarator_utils::is_declared_name(&n)
+        }
+        _ => false,
+    })
+    .is_empty()
 }
 
 /// The operand whose value `node` has: the last operand of a comma
