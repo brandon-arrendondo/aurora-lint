@@ -210,8 +210,9 @@ impl<'a> OperandTypes<'a> {
     }
 
     /// Whether `operand` is a pointer to, or an array of, a character type
-    /// or an exactly 8-bit integer by its declared type: adding a byte count
-    /// to it is byte arithmetic, scaled once. A sum or difference the typer
+    /// or an exactly 8-bit integer by its declared type, or a pointer to
+    /// `void`, which GNU C moves by bytes: adding a byte count to it is byte
+    /// arithmetic, scaled once. A sum or difference the typer
     /// cannot type, because an integer operand's type is not fixed (`p + n *
     /// sizeof(x)` where the data model leaves `size_t`'s rank open), has its
     /// pointer operand's type.
@@ -249,7 +250,7 @@ impl<'a> OperandTypes<'a> {
             } | CType::IntOfWidth {
                 max_bits: Some(8),
                 ..
-            }
+            } | CType::Void
         )
     }
 
@@ -758,7 +759,40 @@ impl Arr39C {
             || right_text.contains("sizeof(signed char)")
     }
 
+    /// Whether `node` is a byte count: a `sizeof` or `offsetof`, a product
+    /// or sum with one in it, or a name that holds one. A quotient is one
+    /// only when its dividend is, since a `sizeof` that divides turns a
+    /// byte count into an element count (`len / sizeof(long)`).
     fn is_scaled_integer_expression(&self, node: &Node, source: &str) -> bool {
+        Self::is_byte_count(node, source, true)
+    }
+
+    /// [`Self::is_scaled_integer_expression`], with `whole` saying whether
+    /// `node` is the whole offset: a bare `skip` or `offset` counts only
+    /// then, and not as one term of a sum or product.
+    fn is_byte_count(node: &Node, source: &str, whole: bool) -> bool {
+        match node.kind() {
+            "parenthesized_expression" => {
+                return node
+                    .named_child(0)
+                    .is_some_and(|inner| Self::is_byte_count(&inner, source, whole));
+            }
+            "binary_expression" => {
+                let operator = node
+                    .child_by_field_name("operator")
+                    .map(|o| ast_utils::get_node_text(&o, source));
+                let side = |field| {
+                    node.child_by_field_name(field)
+                        .is_some_and(|o| Self::is_byte_count(&o, source, false))
+                };
+                match operator {
+                    Some("/" | "%") => return side("left"),
+                    Some("*" | "+" | "-") => return side("left") || side("right"),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
         let text = &source[node.start_byte()..node.end_byte()];
 
         // Common scaled integer patterns - direct sizeof/offsetof
@@ -773,18 +807,13 @@ impl Arr39C {
         // Check for variables that likely hold byte counts/sizes
         // These are common patterns where byte values are incorrectly used for pointer arithmetic
         let lower = text.to_lowercase();
-        if lower.contains("_size")
+        lower.contains("_size")
             || lower.contains("alloc_size")
             || lower.contains("byte_offset")
-            || lower == "skip"  // offsetof result variable name from wiki example
-            || lower == "offset"  // Common offset variable
+            || (whole && lower == "skip") // offsetof result variable name from wiki example
+            || (whole && lower == "offset") // Common offset variable
             || lower.contains("_bytes")
             || lower.contains("offset_bytes")
-        {
-            return true;
-        }
-
-        false
     }
 
     fn looks_like_pointer(&self, node: &Node, source: &str) -> bool {
