@@ -12118,7 +12118,9 @@ fn con03_reads_a_type_name_by_its_definition_and_stays_silent_without_one() {
     // scanned header, is `SOCKET` or `int` by a macro the platform profile
     // does not settle: its `int` arm makes `spare` a shared object with or
     // without -I. `fd_t` is `HANDLE` in one scanned header and `int` in
-    // another, so `log_fd` is one too.
+    // another, so `log_fd` is one too. `tally_t` is defined in `sock.h` too, as
+    // a name nothing defines: the scan read a definition of the declared
+    // type, so `tally` is read by that name's spelling.
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("inc")).unwrap();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -12132,15 +12134,15 @@ fn con03_reads_a_type_name_by_its_definition_and_stays_silent_without_one() {
         "#include <pthread.h>\n#include \"kinds.h\"\n\n\
          #include \"sock.h\"\n\n\
          #include \"fd.h\"\n\n\
-         static handler_fn on_read;\nstatic counter_t hits;\nstatic sock_t spare;\nstatic fd_t log_fd;\n\n\
-         void *worker(void *arg) {\n    hits++;\n    spare = 1;\n    log_fd = 2;\n    on_read();\n    return arg;\n}\n\n\
+         static handler_fn on_read;\nstatic counter_t hits;\nstatic sock_t spare;\nstatic fd_t log_fd;\nstatic tally_t tally;\n\n\
+         void *worker(void *arg) {\n    hits++;\n    spare = 1;\n    log_fd = 2;\n    tally++;\n    on_read();\n    return arg;\n}\n\n\
          int main(void) {\n    pthread_t t;\n    pthread_create(&t, 0, worker, 0);\n\
          \x20   pthread_join(t, 0);\n    return hits;\n}\n",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("src/sock.h"),
-        "#ifdef WIN32\ntypedef SOCKET sock_t;\n#else\ntypedef int sock_t;\n#endif\n",
+        "#ifdef WIN32\ntypedef SOCKET sock_t;\n#else\ntypedef int sock_t;\n#endif\ntypedef ext_count_t tally_t;\n",
     )
     .unwrap();
     std::fs::write(
@@ -12170,7 +12172,7 @@ fn con03_reads_a_type_name_by_its_definition_and_stays_silent_without_one() {
     };
     assert_eq!(
         reported(&["-I", inc.to_str().unwrap()]),
-        ["hits", "spare", "log_fd"]
+        ["hits", "spare", "log_fd", "tally"]
     );
-    assert_eq!(reported(&[]), ["spare", "log_fd"]);
+    assert_eq!(reported(&[]), ["spare", "log_fd", "tally"]);
 }

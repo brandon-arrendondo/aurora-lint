@@ -654,15 +654,17 @@ impl Con03C {
             _ => get_node_text(&ty, source).to_string(),
         };
         let mut budget = TYPE_RESOLUTION_CAP;
-        self.resolve_spelling(&spelling, &mut Vec::new(), &mut budget)
+        self.resolve_spelling(&spelling, false, &mut Vec::new(), &mut budget)
     }
 
     /// Resolve a type spelling. A single name is expanded through every
     /// definition of it as an object-like macro or a typedef; anything else
     /// (`struct k_mutex`, `_Atomic int`) is classified as written.
+    /// `under_typedef` says a typedef the scan read led here.
     fn resolve_spelling(
         &self,
         text: &str,
+        under_typedef: bool,
         stack: &mut Vec<String>,
         budget: &mut usize,
     ) -> BaseType {
@@ -676,18 +678,21 @@ impl Con03C {
             return BaseType::Unknown;
         }
         *budget -= 1;
-        let mut definitions: Vec<String> = Vec::new();
+        // Each definition, with whether it is a typedef's. The macro table
+        // spans every file, so a name one file renames (`#define Font
+        // X11Font`) and another defines as a typedef has both as arms;
+        // neither is known to be the one this file sees.
+        let mut definitions: Vec<(String, bool)> = Vec::new();
         if let Some(defs) = self.macro_definitions.borrow().get(name) {
             for def in defs {
                 match def {
-                    MacroDefinition::Object { body } => definitions.push(body.clone()),
+                    MacroDefinition::Object { body } => {
+                        definitions.push((body.clone(), under_typedef))
+                    }
                     _ => return BaseType::Other,
                 }
             }
         }
-        // The macro table spans every file, so a name one file renames
-        // (`#define Font X11Font`) and another defines as a typedef has both
-        // as arms; neither is known to be the one this file sees.
         // This file's own definitions win, every arm of them
         // (`typedef SOCKET mosq_sock_t;` under `#ifdef WIN32`, `typedef int
         // mosq_sock_t;` otherwise). For a name only other files define,
@@ -717,17 +722,23 @@ impl Con03C {
         };
         let typedef_kind = match typedef_arm {
             Some(Ok(aliased)) => {
-                definitions.extend(aliased);
+                definitions.extend(aliased.into_iter().map(|a| (a, true)));
                 None
             }
             Some(Err(kind)) => Some(kind),
+            // A name a typedef the scan read aliases (`typedef sqlite_uint64
+            // u64;` when nothing read defines `sqlite_uint64`) is read by its
+            // spelling, as before: the declared type has a definition. A
+            // name only a macro leads to does not, since the macro may be
+            // another file's.
+            None if definitions.is_empty() && under_typedef => return classify_spelling(name),
             None if definitions.is_empty() => return classify_unresolved_name(name),
             None => None,
         };
         stack.push(name.to_string());
         let resolved = definitions
             .iter()
-            .map(|d| self.resolve_spelling(d, stack, budget))
+            .map(|(d, typedef)| self.resolve_spelling(d, *typedef, stack, budget))
             .chain(typedef_kind)
             .reduce(BaseType::join)
             .unwrap_or(BaseType::Other);
