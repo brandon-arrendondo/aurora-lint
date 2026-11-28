@@ -357,7 +357,6 @@ impl Arr39C {
             &[
                 "binary_expression",
                 "assignment_expression",
-                "call_expression",
                 "while_statement",
                 "for_statement",
                 "subscript_expression",
@@ -371,9 +370,6 @@ impl Arr39C {
                 }
                 "assignment_expression" => {
                     self.check_assignment_arithmetic(&matched, source, types, violations);
-                }
-                "call_expression" => {
-                    self.check_function_call_scaling(&matched, source, violations);
                 }
                 "while_statement" | "for_statement" => {
                     self.check_loop_pointer_arithmetic(&matched, source, types, violations);
@@ -400,6 +396,28 @@ impl Arr39C {
         self.is_byte_count(offset, source, 0) && types.steps_by_elements(pointer)
     }
 
+    /// Whether `left operator right` adds a byte count to a pointer that
+    /// steps by elements ([`Self::adds_byte_count`]). A sum takes its
+    /// pointer on either side (`n * sizeof(int) + p`); a difference only on
+    /// the left, since an integer minus a pointer is no C.
+    fn scales_sum(
+        &self,
+        operator: &str,
+        left: &Node,
+        right: &Node,
+        source: &str,
+        types: &OperandTypes,
+    ) -> bool {
+        match operator {
+            "+" => {
+                self.adds_byte_count(left, right, source, types)
+                    || self.adds_byte_count(right, left, source, types)
+            }
+            "-" => self.adds_byte_count(left, right, source, types),
+            _ => false,
+        }
+    }
+
     fn check_pointer_arithmetic(
         &self,
         node: &Node,
@@ -407,32 +425,31 @@ impl Arr39C {
         types: &OperandTypes,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if let Some(operator) = self.get_operator(node, source) {
-            if operator == "+" || operator == "-" {
-                if let (Some(left), Some(right)) = (
-                    node.child_by_field_name("left"),
-                    node.child_by_field_name("right"),
-                ) {
-                    if self.adds_byte_count(&left, &right, source, types) {
-                        let start_point = node.start_position();
-                        let expr_text = &source[node.start_byte()..node.end_byte()];
+        let (Some(operator), Some(left), Some(right)) = (
+            node.child_by_field_name("operator"),
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) else {
+            return;
+        };
+        let operator = ast_utils::get_node_text(&operator, source);
+        if self.scales_sum(operator, &left, &right, source, types) {
+            let start_point = node.start_position();
+            let expr_text = &source[node.start_byte()..node.end_byte()];
 
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            severity: Severity::High,
-                            message: format!(
-                                "Scaled integer arithmetic with pointer: '{}'. This results in double scaling",
-                                expr_text
-                            ),
-                            file_path: String::new(),
-                            line: start_point.row + 1,
-                            column: start_point.column + 1,
-                            suggestion: Some("Remove sizeof() or use unscaled integer arithmetic".to_string()),
-                        ..Default::default()
-                        });
-                    }
-                }
-            }
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity: Severity::High,
+                message: format!(
+                    "Scaled integer arithmetic with pointer: '{}'. This results in double scaling",
+                    expr_text
+                ),
+                file_path: String::new(),
+                line: start_point.row + 1,
+                column: start_point.column + 1,
+                suggestion: Some("Remove sizeof() or use unscaled integer arithmetic".to_string()),
+                ..Default::default()
+            });
         }
     }
 
@@ -503,33 +520,6 @@ impl Arr39C {
                     ),
                     ..Default::default()
                 });
-            }
-        }
-    }
-
-    fn check_function_call_scaling(
-        &self,
-        node: &Node,
-        source: &str,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        if let Some(function_node) = node.child_by_field_name("function") {
-            let function_name = &source[function_node.start_byte()..function_node.end_byte()];
-
-            // Check specific functions that commonly have scaling issues
-            match function_name {
-                "fgetws" | "fputws" => {
-                    self.check_wide_string_function_scaling(
-                        node,
-                        source,
-                        function_name,
-                        violations,
-                    );
-                }
-                "memset" | "memcpy" | "memmove" => {
-                    self.check_memory_function_scaling(node, source, function_name, violations);
-                }
-                _ => {}
             }
         }
     }
@@ -650,87 +640,25 @@ impl Arr39C {
                         .is_some_and(|a| types.steps_by_elements(&a))
             }
             "binary_expression" => {
-                matches!(
-                    node.child_by_field_name("operator")
-                        .map(|o| ast_utils::get_node_text(&o, source)),
-                    Some("+" | "-")
-                ) && node
-                    .child_by_field_name("right")
-                    .is_some_and(|r| is_counter(&r))
-                    && node
-                        .child_by_field_name("left")
-                        .is_some_and(|l| types.steps_by_elements(&l))
+                let operator = node
+                    .child_by_field_name("operator")
+                    .map(|o| ast_utils::get_node_text(&o, source));
+                let steps = |pointer: &str, offset: &str| {
+                    node.child_by_field_name(offset)
+                        .is_some_and(|o| is_counter(&o))
+                        && node
+                            .child_by_field_name(pointer)
+                            .is_some_and(|p| types.steps_by_elements(&p))
+                };
+                match operator {
+                    Some("+") => steps("left", "right") || steps("right", "left"),
+                    Some("-") => steps("left", "right"),
+                    _ => false,
+                }
             }
             _ => false,
         })
         .is_some()
-    }
-
-    fn check_wide_string_function_scaling(
-        &self,
-        node: &Node,
-        source: &str,
-        function_name: &str,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        let args = self.get_function_arguments(node, source);
-
-        for (i, arg) in args.iter().enumerate() {
-            if arg.contains("wcslen(") && arg.contains("sizeof(wchar_t)") {
-                let start_point = node.start_position();
-                violations.push(RuleViolation {
-                    rule_id: self.rule_id().to_string(),
-                    severity: Severity::High,
-                    message: format!(
-                        "Function '{}' argument {} uses scaled arithmetic: '{}'. wcslen already returns character count",
-                        function_name, i + 1, arg
-                    ),
-                    file_path: String::new(),
-                    line: start_point.row + 1,
-                    column: start_point.column + 1,
-                    suggestion: Some("Remove '* sizeof(wchar_t)' multiplication".to_string()),
-                ..Default::default()
-                });
-            }
-        }
-    }
-
-    fn check_memory_function_scaling(
-        &self,
-        node: &Node,
-        source: &str,
-        function_name: &str,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        if let Some(arguments) = node.child_by_field_name("arguments") {
-            // Look for patterns in the first argument (destination pointer arithmetic)
-            for i in 0..arguments.child_count() {
-                if let Some(arg) = arguments.child(i) {
-                    if arg.kind() != "," {
-                        let arg_text = &source[arg.start_byte()..arg.end_byte()];
-
-                        // Check for scaled offset patterns like: struct_ptr + offsetof(...) * sizeof(...)
-                        if self.is_scaled_offset_pattern(arg_text) {
-                            let start_point = arg.start_position();
-                            violations.push(RuleViolation {
-                                rule_id: self.rule_id().to_string(),
-                                severity: Severity::High,
-                                message: format!(
-                                    "Function '{}' called with scaled offset. offsetof() result is already scaled",
-                                    function_name
-                                ),
-                                file_path: String::new(),
-                                line: start_point.row + 1,
-                                column: start_point.column + 1,
-                                suggestion: Some("Use char* pointer to avoid scaling or remove extra scaling".to_string()),
-                            ..Default::default()
-                            });
-                        }
-                        break; // Only check first argument for destination pointer
-                    }
-                }
-            }
-        }
     }
 
     /// `node` with any parentheses around it taken off.
@@ -848,11 +776,6 @@ impl Arr39C {
         written.is_none().then_some(value)
     }
 
-    fn is_scaled_offset_pattern(&self, text: &str) -> bool {
-        (text.contains("offsetof(") && text.contains("*"))
-            || (text.contains("offsetof(") && text.contains("sizeof("))
-    }
-
     /// Whether a loop `condition` compares against a pointer to which a byte
     /// count is added (`ptr < buf + sizeof(buf)`).
     fn compares_against_scaled_pointer(
@@ -872,16 +795,18 @@ impl Arr39C {
                     node.child_by_field_name(field).is_some_and(|side| {
                         let side = Self::unparenthesized(side);
                         side.kind() == "binary_expression"
-                            && matches!(
-                                side.child_by_field_name("operator")
-                                    .map(|o| ast_utils::get_node_text(&o, source)),
-                                Some("+" | "-")
-                            )
                             && match (
+                                side.child_by_field_name("operator"),
                                 side.child_by_field_name("left"),
                                 side.child_by_field_name("right"),
                             ) {
-                                (Some(l), Some(r)) => self.adds_byte_count(&l, &r, source, types),
+                                (Some(o), Some(l), Some(r)) => self.scales_sum(
+                                    ast_utils::get_node_text(&o, source),
+                                    &l,
+                                    &r,
+                                    source,
+                                    types,
+                                ),
                                 _ => false,
                             }
                     })
@@ -899,18 +824,6 @@ impl Arr39C {
         }
     }
 
-    fn get_operator(&self, node: &Node, source: &str) -> Option<String> {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                let text = &source[child.start_byte()..child.end_byte()];
-                if matches!(text, "+" | "-" | "*" | "/") {
-                    return Some(text.to_string());
-                }
-            }
-        }
-        None
-    }
-
     fn get_assignment_operator(&self, node: &Node, source: &str) -> Option<String> {
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
@@ -921,22 +834,5 @@ impl Arr39C {
             }
         }
         None
-    }
-
-    fn get_function_arguments(&self, node: &Node, source: &str) -> Vec<String> {
-        let mut args = Vec::new();
-
-        if let Some(arguments) = node.child_by_field_name("arguments") {
-            for i in 0..arguments.child_count() {
-                if let Some(child) = arguments.child(i) {
-                    if child.kind() != "," {
-                        let arg_text = source[child.start_byte()..child.end_byte()].to_string();
-                        args.push(arg_text);
-                    }
-                }
-            }
-        }
-
-        args
     }
 }

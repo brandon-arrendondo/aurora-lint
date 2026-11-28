@@ -2,6 +2,11 @@
  * Rule: ARR39-C
  * Source: testcases
  * Status: FAIL - Should trigger ARR39-C violation
+ * Settings: data_model=lp64, wchar_t_bits=32
+ *
+ * The wchar_t width is declared, so the array steps by 4 bytes and a
+ * count scaled by sizeof(wchar_t) is scaled twice, inside a call's
+ * argument as anywhere else.
  */
 
 /*
@@ -21,7 +26,7 @@ void func(void) {
     wcscpy(error_msg, L"Error: ");
 
     // Manually scaling by sizeof(wchar_t) - double-scaling
-    fgetws(error_msg + wcslen(error_msg) * sizeof(wchar_t),  // Line 18 - VIOLATION
+    fgetws(error_msg + wcslen(error_msg) * sizeof(wchar_t),  /* Expect: here */
            WCHAR_BUF - 7, stdin);
 }
 

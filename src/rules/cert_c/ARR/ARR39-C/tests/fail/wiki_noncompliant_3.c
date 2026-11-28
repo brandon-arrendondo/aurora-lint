@@ -2,6 +2,10 @@
  * Rule: ARR39-C
  * Source: wiki
  * Status: FAIL - Should trigger ARR39-C violation
+ * Settings: data_model=lp64, wchar_t_bits=32
+ *
+ * A wchar_t is as wide as the platform makes it; declared 4 bytes here, so
+ * the array steps by 4 and the count scaled by sizeof(wchar_t) scales twice.
  */
 
 #include <wchar.h>
