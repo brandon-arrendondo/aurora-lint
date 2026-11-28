@@ -28,6 +28,9 @@ char_signed = true
 # different function frees. os_free is NOT declared: it has a body, and
 # frees by it. X509_STORE_CTX_cleanup (keeps the context), rtnl_link_delete
 # (a kernel operation) and wpa_driver_ndis_adapter_close are not frees.
+# X509_REQ_free releases the request crypto_csr_deinit hands it in the
+# OpenSSL build; its allocators (X509_REQ_new, d2i_X509_REQ) need no entry,
+# since crypto_csr_init and crypto_csr_verify already read as allocating.
 [environment.deallocators]
 EVP_PKEY_free = 1
 EVP_PKEY_CTX_free = 1
@@ -41,6 +44,7 @@ BN_clear_free = 1
 X509_free = 1
 X509_STORE_free = 1
 X509_STORE_CTX_free = 1
+X509_REQ_free = 1
 ASN1_OCTET_STRING_free = 1
 DH_free = 1
 RSA_free = 1
