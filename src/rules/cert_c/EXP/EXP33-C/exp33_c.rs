@@ -601,11 +601,6 @@ impl CertRule for Exp33C {
 // AST walk for read sites
 // ---------------------------------------------------------------------------
 
-/// Walk the AST looking for reads of tracked variables.
-/// What every read of one function asks through, built once for the
-/// function: its statements by byte range and each block's declarations.
-/// Built again at each read, each was a pass over the body, so checking
-/// the reads of a long function cost the square of its length.
 /// What a variable index into a buffer is bounded by where it is read:
 /// the value ranges of the function it is in. The scan's own results are
 /// read when another enabled rule had it compute them; otherwise only a
@@ -613,6 +608,17 @@ impl CertRule for Exp33C {
 /// Asking the scan for value ranges instead ran the analysis over every
 /// function of every file, which on a 9 MB amalgamation outlasts the time
 /// a file's analysis is given, for the few reads that need it.
+///
+/// That analysis has fewer facts than the scan's: the prescan's function
+/// summaries alone, without the ones the scan derives for this file (the
+/// ranges its own calls pass each parameter), and no library calls, so no
+/// guard read through `abs` or `sqrt`. Each missing fact is a bound it does
+/// not apply: a parameter keeps its type's whole range, a call's result is
+/// bounded only by a summary's return range, and a guard through a library
+/// call narrows nothing. Its ranges can only be wider than the scan's, so a
+/// read it finds in bounds the scan would find in bounds too. Sharing the
+/// scan's setup would mean building, inside a rule, the file context only
+/// the scan holds.
 struct IndexRanges {
     cfgs: Arc<HashMap<usize, FunctionCfg>>,
     vra: Arc<HashMap<usize, RangeAnalysisResult>>,
@@ -665,6 +671,11 @@ impl IndexRanges {
     }
 }
 
+/// Walk the AST looking for reads of tracked variables.
+/// What every read of one function asks through, built once for the
+/// function: its statements by byte range and each block's declarations.
+/// Built again at each read, each was a pass over the body, so checking
+/// the reads of a long function cost the square of its length.
 struct FunctionLookups<'t> {
     statements: StatementLookup<'t>,
     /// Bounds on a variable index, for [`init_state::reads_unwritten_element`].
