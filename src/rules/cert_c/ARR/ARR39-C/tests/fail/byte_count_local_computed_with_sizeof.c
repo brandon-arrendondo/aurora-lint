@@ -13,29 +13,29 @@
 #include <string.h>
 #include <stddef.h>
 
-void byte_offset(void) {
+void offset_ints(void) {
     int data[40];
-    size_t byte_offset = 4 * sizeof(int);
+    size_t k = 4 * sizeof(int);
 
-    int *ptr = data + byte_offset; /* Expect: here */
+    int *ptr = data + k; /* Expect: here */
     *ptr = 55;
 }
 
-void malloc_size_offset(void) {
-    size_t alloc_size = 50 * sizeof(int);
-    int *buffer = (int *)malloc(alloc_size);
+void allocated_end(void) {
+    size_t m = 50 * sizeof(int);
+    int *buffer = (int *)malloc(m);
 
     if (buffer) {
-        int *end = buffer + alloc_size; /* Expect: here */
+        int *end = buffer + m; /* Expect: here */
         *(end - 1) = 999;
         free(buffer);
     }
 }
 
-void memcpy_sizeof_offset(void) {
+void copy_at_offset(void) {
     int src[40] = {0};
     int dest[40];
-    size_t offset_bytes = 5 * sizeof(int);
+    size_t q = 5 * sizeof(int);
 
-    memcpy(dest + offset_bytes, src, 10 * sizeof(int)); /* Expect: here */
+    memcpy(dest + q, src, 10 * sizeof(int)); /* Expect: here */
 }

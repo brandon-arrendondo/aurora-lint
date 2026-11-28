@@ -93,6 +93,7 @@ impl CertRule for Arr39C {
             facts: OnceCell::new(),
             env: OnceCell::new(),
             macros: OnceCell::new(),
+            defined_records: OnceCell::new(),
             variable_types: RefCell::new(HashMap::new()),
         };
         self.check_node(node, source, &types, violations);
@@ -115,6 +116,8 @@ struct OperandTypes<'a> {
     env: OnceCell<TypeEnv<'a>>,
     /// The file's object-like macros, with the offset of each `#define`.
     macros: OnceCell<HashMap<String, Vec<usize>>>,
+    /// The tags of the structs and unions this file defines with a body.
+    defined_records: OnceCell<HashSet<String>>,
     /// Each function's `{name -> declared type}` map, by the function's
     /// node id.
     variable_types: RefCell<HashMap<usize, Arc<HashMap<String, String>>>>,
@@ -248,7 +251,8 @@ impl<'a> OperandTypes<'a> {
     /// `void` (which GNU C moves by bytes) step by one byte. An element the
     /// declarations leave unknown, or an integer type that may be a single
     /// byte, gives no finding: like [`Self::is_pointer`], this answers only
-    /// what the declarations show. A `wchar_t` element steps by
+    /// what the declarations show. So does a struct or union whose
+    /// definition the file does not see, as when its header is missing. A `wchar_t` element steps by
     /// `sizeof(wchar_t)`, which only a declared `wchar_t_bits` fixes.
     fn steps_by_elements(&self, operand: &Node) -> bool {
         if !self.is_pointer(operand) {
@@ -271,8 +275,31 @@ impl<'a> OperandTypes<'a> {
                 max_bits: None,
                 ..
             }) => min_bits > 8,
+            Some(CType::Record(Some(tag))) => self.defines_record(&tag),
             Some(_) => true,
         }
+    }
+
+    /// Whether a definition of the struct or union `tag` is visible: one the
+    /// project's field tables file (a struct, from this file or a header),
+    /// or a `struct`/`union` specifier with a body in this file.
+    fn defines_record(&self, tag: &str) -> bool {
+        self.visible.struct_field_shapes.contains_key(tag)
+            || self.visible.struct_field_types.contains_key(tag)
+            || self
+                .defined_records
+                .get_or_init(|| {
+                    query::find_descendants_of_kinds(
+                        self.root,
+                        &["struct_specifier", "union_specifier"],
+                    )
+                    .into_iter()
+                    .filter(|s| s.child_by_field_name("body").is_some())
+                    .filter_map(|s| s.child_by_field_name("name"))
+                    .map(|n| ast_utils::get_node_text(&n, self.source).to_string())
+                    .collect()
+                })
+                .contains(tag)
     }
 
     /// Whether `operand` names an object its declaration gives `wchar_t`
@@ -362,9 +389,7 @@ impl Arr39C {
 
     /// Whether adding `offset` to `pointer` scales twice: `offset` is a
     /// byte count by its structure ([`Self::is_byte_count`]) and `pointer`
-    /// steps by elements wider than a byte. A count scaled by
-    /// `sizeof(char)` is its own anti-pattern on any pointer, since that
-    /// multiplication is always by 1.
+    /// steps by elements wider than a byte.
     fn adds_byte_count(
         &self,
         pointer: &Node,
@@ -372,9 +397,7 @@ impl Arr39C {
         source: &str,
         types: &OperandTypes,
     ) -> bool {
-        self.is_byte_count(offset, source, 0)
-            && (types.steps_by_elements(pointer)
-                || (Self::scaled_by_char_size(offset, source) && types.is_pointer(pointer)))
+        self.is_byte_count(offset, source, 0) && types.steps_by_elements(pointer)
     }
 
     fn check_pointer_arithmetic(
@@ -708,22 +731,6 @@ impl Arr39C {
                 }
             }
         }
-    }
-
-    /// Whether `right` scales by `sizeof` a character type, always 1, however
-    /// it is spaced (`sizeof (char)`): its own anti-pattern whatever the
-    /// pointer's type.
-    fn scaled_by_char_size(right: &Node, source: &str) -> bool {
-        let right_text: String = ast_utils::get_node_text(right, source)
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .replace("sizeof (", "sizeof(")
-            .replace("( ", "(")
-            .replace(" )", ")");
-        right_text.contains("sizeof(char)")
-            || right_text.contains("sizeof(unsigned char)")
-            || right_text.contains("sizeof(signed char)")
     }
 
     /// `node` with any parentheses around it taken off.

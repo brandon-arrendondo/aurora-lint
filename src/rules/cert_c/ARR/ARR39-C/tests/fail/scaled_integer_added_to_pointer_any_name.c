@@ -2,11 +2,12 @@
  * Rule: ARR39-C
  * Source: synthetic
  * Status: FAIL - Should trigger ARR39-C violation
- * Expect: count=6
+ * Expect: count=7
  *
  * A pointer operand is known by its type, not its name: a typedef'd
  * pointer, a struct member and an array element's member each point to
- * int, so adding a scaled integer to one scales twice.
+ * int, and a pointer to a struct the file defines steps by its size, so
+ * adding a scaled integer to one scales twice.
  */
 
 #include <stddef.h>
@@ -40,4 +41,8 @@ void step_slot(struct ring *r, size_t n) {
 
 int read_slot(struct ring *r, size_t n) {
   return r->slots[n * sizeof(int)];
+}
+
+struct ring *next_ring(struct ring *r, size_t n) {
+  return r + n * sizeof(int);
 }

@@ -46,6 +46,6 @@ int *leftover_bytes(int *ptr, size_t len) {
   return ptr + len % sizeof(int); /* Expect: here */
 }
 
-char *char_size_spaced(char *buf, size_t n) {
-  return buf + n * sizeof (char); /* Expect: here */
+int *char_size_spaced(int *ptr, size_t n) {
+  return ptr + n * sizeof (char); /* Expect: here */
 }
